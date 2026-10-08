@@ -30,6 +30,15 @@ struct BrowserCandidate {
 }
 
 const CANDIDATES: &[BrowserCandidate] = &[
+    #[cfg(target_os = "windows")]
+    BrowserCandidate {
+        name: "Google Chrome",
+        binary: "chrome.exe",
+        remote_debugging: true,
+        remote_debug_hint: "--remote-debugging-port=<port>",
+        mcp_supported: true,
+        support_note: "Chromium (supported)",
+    },
     BrowserCandidate {
         name: "Google Chrome",
         binary: "google-chrome-stable",
@@ -171,12 +180,30 @@ fn resolve_binary(binary: &str) -> Option<PathBuf> {
         }
     }
 
+    #[cfg(target_os = "windows")]
+    if let Some(candidate) = resolve_windows_application_binary(binary) {
+        return Some(candidate);
+    }
+
     #[cfg(target_os = "macos")]
     if let Some(candidate) = resolve_macos_application_binary(binary) {
         return Some(candidate);
     }
 
     None
+}
+
+#[cfg(target_os = "windows")]
+fn resolve_windows_application_binary(binary: &str) -> Option<PathBuf> {
+    let subpath = match binary {
+        "chrome.exe" => "Google\\Chrome\\Application\\chrome.exe",
+        _ => return None,
+    };
+    ["ProgramFiles", "ProgramFiles(x86)", "LOCALAPPDATA"]
+        .iter()
+        .filter_map(|key| std::env::var_os(key))
+        .map(|root| PathBuf::from(root).join(subpath))
+        .find(|path| path.is_file())
 }
 
 #[cfg(target_os = "macos")]
@@ -452,6 +479,12 @@ pub fn format_active_remote_debug_names(browsers: &[DetectedBrowser]) -> String 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn chrome_executable_is_a_supported_candidate_on_windows() {
+        assert!(CANDIDATES.iter().any(|c| c.binary == "chrome.exe" && c.mcp_supported));
+    }
 
     #[cfg(target_os = "macos")]
     #[test]

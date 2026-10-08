@@ -23,7 +23,8 @@ impl DevtoolsBridge {
     pub async fn start(
         selected_browser: Option<&DetectedBrowser>,
     ) -> Result<Arc<Mutex<Self>>, String> {
-        let mut command = Command::new("npx");
+        // On Windows, npm installs npx.cmd rather than an npx.exe executable.
+        let mut command = Command::new(if cfg!(windows) { "npx.cmd" } else { "npx" });
         command.args(["-y", "chrome-devtools-mcp@latest"]);
 
         if let Some(browser) = selected_browser {

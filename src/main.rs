@@ -5200,10 +5200,11 @@ async fn ensure_selected_browser_remote_debugging(
         return Some(selected);
     };
 
-    let user_data_dir = format!(
-        "/tmp/catdesk-remote-debug-{}",
-        sanitize_for_filename(&selected.binary)
-    );
+    let user_data_dir = std::env::temp_dir().join(format!(
+        "catdesk-remote-debug-{}-{}",
+        sanitize_for_filename(&selected.binary),
+        std::process::id()
+    ));
     if let Err(e) = std::fs::create_dir_all(&user_data_dir) {
         state.lock().await.log(
             "WARN",
@@ -5215,7 +5216,7 @@ async fn ensure_selected_browser_remote_debugging(
     command
         .arg(format!("--remote-debugging-port={port}"))
         .arg("--remote-debugging-address=127.0.0.1")
-        .arg(format!("--user-data-dir={user_data_dir}"))
+        .arg(format!("--user-data-dir={}", user_data_dir.display()))
         .arg("--no-first-run")
         .arg("--no-default-browser-check")
         .stdin(std::process::Stdio::null())

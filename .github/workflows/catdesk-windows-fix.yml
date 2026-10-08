@@ -1,0 +1,43 @@
+name: CatDesk Windows 0.9.5 patched build
+
+on:
+  push:
+    branches:
+      - fix/windows-browser-support-v0.9.5
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-2022
+    timeout-minutes: 60
+    steps:
+      - name: Checkout patched branch
+        uses: actions/checkout@v4
+      - name: Install stable Rust
+        shell: pwsh
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+      - name: Verify Windows browser candidate
+        shell: pwsh
+        run: cargo test --locked browser::tests
+      - name: Build optimized executable
+        shell: pwsh
+        run: cargo build --release --locked
+      - name: Verify build output
+        shell: pwsh
+        run: |
+          if (-not (Test-Path target/release/catdesk.exe)) {
+            throw "catdesk.exe not created"
+          }
+          Get-Item target/release/catdesk.exe | Select-Object Name, Length
+      - name: Upload Windows executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: catdesk-windows-chrome-fix-v0.9.5
+          path: target/release/catdesk.exe
+          if-no-files-found: error
+          retention-days: 14
