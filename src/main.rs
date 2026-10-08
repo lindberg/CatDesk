@@ -5208,7 +5208,7 @@ async fn ensure_selected_browser_remote_debugging(
     if let Err(e) = std::fs::create_dir_all(&user_data_dir) {
         state.lock().await.log(
             "WARN",
-            format!("Failed to create user data dir {user_data_dir}: {e}"),
+            format!("Failed to create user data dir {}: {e}", user_data_dir.display()),
         );
     }
 
