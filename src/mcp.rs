@@ -3285,7 +3285,10 @@ fn build_auto_widget_payload(
 fn compact_tool_result(req: &JsonRpcRequest, result: &mut Value) {
     let tool_name = tool_name_from_request(req);
     // Image/resource content needs to reach the client without transformation.
-    if matches!(tool_name.as_str(), "take_screenshot" | "screenshot") {
+    if matches!(
+        tool_name.as_str(),
+        "take_screenshot" | "screenshot" | "catdesk_instruction" | "create_handoff"
+    ) {
         return;
     }
     if result
@@ -3372,9 +3375,14 @@ fn compact_tool_result(req: &JsonRpcRequest, result: &mut Value) {
                 .map(|f| {
                     let mut entry = Map::new();
                     if let Some(o) = f.as_object() {
-                        for key in ["path", "sizeBytes", "lineCount", "truncated", "error"] {
+                        for key in ["path", "sizeBytes", "lineCount", "truncated"] {
                             if let Some(value) = o.get(key) {
                                 entry.insert(key.into(), value.clone());
+                            }
+                        }
+                        for key in ["error", "text"] {
+                            if let Some(value) = o.get(key).and_then(Value::as_str) {
+                                entry.insert(key.into(), json!(truncate_for_widget(value, 140)));
                             }
                         }
                     }
@@ -3382,6 +3390,52 @@ fn compact_tool_result(req: &JsonRpcRequest, result: &mut Value) {
                 })
                 .collect::<Vec<_>>();
             compact.insert("files".into(), Value::Array(names));
+        }
+        // Preserve small incremental progress and search samples without
+        // returning huge event streams or entire position snapshots.
+        if let Some(events) = fields.get("events").and_then(Value::as_array) {
+            let tail = events
+                .iter()
+                .rev()
+                .take(3)
+                .rev()
+                .map(|event| {
+                    let mut entry = Map::new();
+                    if let Some(obj) = event.as_object() {
+                        for key in ["seq", "stream"] {
+                            if let Some(v) = obj.get(key) {
+                                entry.insert(key.into(), v.clone());
+                            }
+                        }
+                        if let Some(message) = obj.get("text").and_then(Value::as_str) {
+                            entry.insert("text".into(), json!(truncate_for_widget(message, 170)));
+                        }
+                    }
+                    Value::Object(entry)
+                })
+                .collect::<Vec<_>>();
+            compact.insert("events".into(), Value::Array(tail));
+        }
+        if let Some(hits) = fields.get("searchResults").and_then(Value::as_array) {
+            let sample = hits
+                .iter()
+                .take(3)
+                .map(|hit| {
+                    let mut entry = Map::new();
+                    if let Some(obj) = hit.as_object() {
+                        for key in ["path", "line", "isContext"] {
+                            if let Some(v) = obj.get(key) {
+                                entry.insert(key.into(), v.clone());
+                            }
+                        }
+                        if let Some(value) = obj.get("text").and_then(Value::as_str) {
+                            entry.insert("text".into(), json!(truncate_for_widget(value, 160)));
+                        }
+                    }
+                    Value::Object(entry)
+                })
+                .collect::<Vec<_>>();
+            compact.insert("searchResults".into(), Value::Array(sample));
         }
         // Short context, with error tails kept for diagnosis.
         for key in ["command", "stdout", "stderr", "message", "text"] {
@@ -3406,6 +3460,20 @@ fn compact_tool_result(req: &JsonRpcRequest, result: &mut Value) {
                 };
                 compact.insert(key.into(), json!(bounded));
             }
+        }
+    }
+    if existing.is_none() {
+        if let Some(raw_error) =
+            result
+                .get("content")
+                .and_then(Value::as_array)
+                .and_then(|entries| {
+                    entries
+                        .iter()
+                        .find_map(|entry| entry.get("text").and_then(Value::as_str))
+                })
+        {
+            compact.insert("message".into(), json!(truncate_for_widget(raw_error, 280)));
         }
     }
     if let Some(object) = result.as_object_mut() {
@@ -7905,6 +7973,39 @@ mod compact_output_tests {
         let mut result = raw.clone();
         compact_tool_result(&req, &mut result);
         assert_eq!(result, raw);
+    }
+
+    #[test]
+    fn compact_never_truncates_required_tool_instructions() {
+        let req = request("catdesk_instruction");
+        let raw = json!({"content":[{"type":"text","text":"mandatory instructions".repeat(4000)}]});
+        let mut result = raw.clone();
+        compact_tool_result(&req, &mut result);
+        assert_eq!(result, raw);
+    }
+
+    #[test]
+    fn compact_keeps_progress_cursor_and_bounded_recent_events() {
+        let req = request("poll_command");
+        let raw = json!({"structuredContent":{
+            "command":"build", "state":"running", "jobId":"job_1",
+            "nextCursor":123, "hasMoreOutput":true,
+            "events":[
+                {"seq":1, "stream":"stdout", "text":"old".repeat(3000)},
+                {"seq":2, "stream":"stderr", "text":"second"},
+                {"seq":3, "stream":"stdout", "text":"third"},
+                {"seq":4, "stream":"stderr", "text":"fourth"}
+            ]
+        }});
+        let mut result = raw;
+        compact_tool_result(&req, &mut result);
+        let fields = result["structuredContent"].as_object().unwrap();
+        assert_eq!(fields["nextCursor"], json!(123));
+        assert_eq!(fields["hasMoreOutput"], json!(true));
+        let events = fields["events"].as_array().unwrap();
+        assert_eq!(events.len(), 3);
+        assert_eq!(events[0]["seq"], json!(2));
+        assert_eq!(events[2]["stream"], json!("stderr"));
     }
 
     #[test]
