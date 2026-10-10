@@ -233,7 +233,6 @@ impl ShowDetailMode {
         match self {
             Self::Disable => "Disable",
             Self::Expanded => "Expanded",
-            Self::Compact => "Compact: save full results locally; keep ChatGPT output small.",
             Self::Collapsed => "Collapsed",
             Self::Compact => "Compact",
         }
@@ -271,6 +270,7 @@ impl ShowDetailMode {
             Self::Disable => "完全停用網頁 Widget，速度最快且最省記憶體。",
             Self::Expanded => "顯示完整網頁 Widget 與語法高亮差異。",
             Self::Collapsed => "顯示網頁 Widget，但預設收合程式碼變更。",
+            Self::Compact => "Compact: save full outputs locally and show shorter chat results.",
         }
     }
 
