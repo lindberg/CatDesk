@@ -973,6 +973,7 @@ fn parse_show_detail_mode(value: &str) -> Option<ShowDetailMode> {
         "disable" => Some(ShowDetailMode::Disable),
         "expanded" => Some(ShowDetailMode::Expanded),
         "collapsed" => Some(ShowDetailMode::Collapsed),
+        "compact" => Some(ShowDetailMode::Compact),
         _ => None,
     }
 }

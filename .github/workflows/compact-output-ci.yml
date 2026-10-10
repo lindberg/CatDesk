@@ -1,0 +1,24 @@
+name: Compact tool output regression
+
+on:
+  push:
+    branches: [feat/compact-output-20261010]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows-compact:
+    runs-on: windows-2022
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install stable Rust
+        shell: pwsh
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+      - name: Run compact output tests
+        shell: pwsh
+        run: cargo test --locked compact_output_tests

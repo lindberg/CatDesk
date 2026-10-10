@@ -3279,6 +3279,145 @@ fn build_auto_widget_payload(
     }
 }
 
+/// Compact mode retains the complete MCP result in a private local JSON log,
+/// then sends only bounded metadata to the model and ChatGPT widget.
+/// This does NOT change tool invocation counts, command execution or process state.
+fn compact_tool_result(req: &JsonRpcRequest, result: &mut Value) {
+    let tool_name = tool_name_from_request(req);
+    // Image/resource content needs to reach the client without transformation.
+    if matches!(tool_name.as_str(), "take_screenshot" | "screenshot") {
+        return;
+    }
+    if result
+        .get("content")
+        .and_then(Value::as_array)
+        .is_some_and(|entries| {
+            entries.iter().any(|entry| {
+                matches!(
+                    entry.get("type").and_then(Value::as_str),
+                    Some("image" | "audio" | "resource")
+                )
+            })
+        })
+    {
+        return;
+    }
+
+    let Ok(full) = serde_json::to_vec_pretty(result) else {
+        return;
+    };
+    if full.len() <= 1500 {
+        return;
+    }
+    let base_dir = std::env::var_os("LOCALAPPDATA")
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir)
+        .join("CatDesk")
+        .join("tool-output");
+    if std::fs::create_dir_all(&base_dir).is_err() {
+        return; // Never drop data if durable local logging fails.
+    }
+    let output_path = base_dir.join(format!("{}.json", uuid::Uuid::new_v4()));
+    if std::fs::write(&output_path, &full).is_err() {
+        return; // Never drop data if durable local logging fails.
+    }
+
+    let existing = result.get("structuredContent").and_then(Value::as_object);
+    let mut compact = Map::new();
+    compact.insert("toolName".into(), json!(tool_name));
+    compact.insert("compacted".into(), json!(true));
+    compact.insert(
+        "fullOutputFile".into(),
+        json!(output_path.to_string_lossy()),
+    );
+    compact.insert("originalBytes".into(), json!(full.len()));
+    compact.insert("summary".into(), json!("Full original tool result saved locally. Read the fullOutputFile only when the complete result is needed."));
+    if let Some(fields) = existing {
+        // Preserve small machine-readable status fields and pagination cursors.
+        for key in [
+            "success",
+            "exitCode",
+            "state",
+            "jobId",
+            "nextCursor",
+            "hasMoreOutput",
+            "outputTruncated",
+            "stdoutTruncated",
+            "stderrTruncated",
+            "elapsedMs",
+            "matchCount",
+            "fileCount",
+            "lineCount",
+            "bytes",
+            "sizeBytes",
+            "path",
+            "searchPath",
+            "searchPattern",
+            "searchBackend",
+            "searchTruncated",
+            "timedOut",
+            "toolName",
+        ] {
+            if let Some(v) = fields
+                .get(key)
+                .filter(|v| !v.is_string() || v.as_str().is_some_and(|s| s.chars().count() <= 120))
+            {
+                compact.insert(key.into(), v.clone());
+            }
+        }
+        if let Some(files) = fields.get("files").and_then(Value::as_array) {
+            let names = files
+                .iter()
+                .take(8)
+                .map(|f| {
+                    let mut entry = Map::new();
+                    if let Some(o) = f.as_object() {
+                        for key in ["path", "sizeBytes", "lineCount", "truncated", "error"] {
+                            if let Some(value) = o.get(key) {
+                                entry.insert(key.into(), value.clone());
+                            }
+                        }
+                    }
+                    Value::Object(entry)
+                })
+                .collect::<Vec<_>>();
+            compact.insert("files".into(), Value::Array(names));
+        }
+        // Short context, with error tails kept for diagnosis.
+        for key in ["command", "stdout", "stderr", "message", "text"] {
+            if let Some(value) = fields.get(key).and_then(Value::as_str) {
+                let limit = if key == "command" { 160 } else { 280 };
+                let bounded = if value.chars().count() <= limit {
+                    value.to_string()
+                } else if key == "stderr" {
+                    format!(
+                        "…{}",
+                        value
+                            .chars()
+                            .rev()
+                            .take(limit - 1)
+                            .collect::<String>()
+                            .chars()
+                            .rev()
+                            .collect::<String>()
+                    )
+                } else {
+                    truncate_for_widget(value, limit)
+                };
+                compact.insert(key.into(), json!(bounded));
+            }
+        }
+    }
+    if let Some(object) = result.as_object_mut() {
+        // Prevent an existing rich widget payload from duplicating huge data.
+        if let Some(meta) = object.get_mut("_meta").and_then(Value::as_object_mut) {
+            meta.remove(WIDGET_PAYLOAD_META_KEY);
+        }
+        object.insert("content".into(), json!([]));
+        object.insert("structuredContent".into(), Value::Object(compact));
+    }
+}
+
 fn enrich_tool_result_with_show_detail_mode(
     req: &JsonRpcRequest,
     mut result: Value,
@@ -3299,6 +3438,9 @@ fn enrich_tool_result_with_show_detail_mode(
             }
         });
     }
+    if show_detail_mode == ShowDetailMode::Compact {
+        compact_tool_result(req, &mut result);
+    }
     let has_widget_payload = result
         .get("_meta")
         .and_then(Value::as_object)
@@ -3307,7 +3449,13 @@ fn enrich_tool_result_with_show_detail_mode(
     let widget_payload = if has_widget_payload {
         None
     } else {
-        let mut payload = build_auto_widget_payload(req, &result, widget_context);
+        // Avoid leaking full change diffs into the compact widget.
+        let compact_context = if show_detail_mode == ShowDetailMode::Compact {
+            None
+        } else {
+            widget_context
+        };
+        let mut payload = build_auto_widget_payload(req, &result, compact_context);
         if let Some(payload_obj) = payload.as_object_mut() {
             payload_obj.insert(
                 "showDetailMode".to_string(),
@@ -7707,5 +7855,64 @@ hello world"
                 Some(expected)
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod compact_output_tests {
+    use super::*;
+
+    fn request(name: &str) -> JsonRpcRequest {
+        JsonRpcRequest {
+            jsonrpc: "2.0".into(),
+            id: Some(json!(1)),
+            method: "tools/call".into(),
+            params: json!({"name": name, "arguments": {}}),
+        }
+    }
+
+    #[test]
+    fn compact_preserves_complete_large_command_result_on_disk() {
+        let req = request("run_command");
+        let original = json!({
+            "content": [{"type":"text", "text": "x".repeat(20_000)}],
+            "structuredContent": {
+                "toolName": "run_command", "command": "echo test",
+                "stdout": "x".repeat(20_000), "exitCode": 0
+            }
+        });
+        let mut result = original.clone();
+        compact_tool_result(&req, &mut result);
+        let summary = result.get("structuredContent").unwrap();
+        assert_eq!(
+            summary.get("compacted").and_then(Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(summary.get("exitCode").and_then(Value::as_i64), Some(0));
+        let path = PathBuf::from(summary.get("fullOutputFile").unwrap().as_str().unwrap());
+        let stored: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(stored, original);
+        assert!(serde_json::to_vec(&result).unwrap().len() < 1800);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn compact_leaves_image_tool_results_intact() {
+        let req = request("take_screenshot");
+        let raw = json!({
+            "content": [{"type": "image", "data": "x".repeat(20_000), "mimeType": "image/png"}]
+        });
+        let mut result = raw.clone();
+        compact_tool_result(&req, &mut result);
+        assert_eq!(result, raw);
+    }
+
+    #[test]
+    fn compact_leaves_small_results_intact() {
+        let req = request("run_command");
+        let raw = json!({"content":[{"type":"text","text":"ok"}], "structuredContent":{"toolName":"run_command","exitCode":0}});
+        let mut result = raw.clone();
+        compact_tool_result(&req, &mut result);
+        assert_eq!(result, raw);
     }
 }

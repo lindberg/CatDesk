@@ -215,14 +215,16 @@ pub enum ShowDetailMode {
     #[default]
     Expanded,
     Collapsed,
+    Compact,
 }
 
 impl ShowDetailMode {
     pub fn all() -> &'static [ShowDetailMode] {
-        const MODES: [ShowDetailMode; 3] = [
+        const MODES: [ShowDetailMode; 4] = [
             ShowDetailMode::Disable,
             ShowDetailMode::Expanded,
             ShowDetailMode::Collapsed,
+            ShowDetailMode::Compact,
         ];
         &MODES
     }
@@ -231,7 +233,9 @@ impl ShowDetailMode {
         match self {
             Self::Disable => "Disable",
             Self::Expanded => "Expanded",
+            Self::Compact => "Compact: save full results locally; keep ChatGPT output small.",
             Self::Collapsed => "Collapsed",
+            Self::Compact => "Compact",
         }
     }
 
@@ -240,8 +244,10 @@ impl ShowDetailMode {
             (Self::Disable, UiLanguage::English) => "Disable",
             (Self::Expanded, UiLanguage::English) => "Expanded",
             (Self::Collapsed, UiLanguage::English) => "Collapsed",
+            (Self::Compact, UiLanguage::English) => "Compact",
             (Self::Disable, UiLanguage::TraditionalChinese) => "停用",
             (Self::Expanded, UiLanguage::TraditionalChinese) => "展開",
+            (Self::Compact, UiLanguage::TraditionalChinese) => "Compact",
             (Self::Collapsed, UiLanguage::TraditionalChinese) => "收合",
         }
     }
@@ -251,6 +257,9 @@ impl ShowDetailMode {
             Self::Disable => "Completely disable the web widget. Fastest and uses least memory.",
             Self::Expanded => "Show the full web widget with syntax-highlighted diffs.",
             Self::Collapsed => "Show the web widget but keep code changes collapsed by default.",
+            Self::Compact => {
+                "Keep calls; save full responses locally and return a small summary to ChatGPT."
+            }
         }
     }
 
@@ -270,6 +279,7 @@ impl ShowDetailMode {
             Self::Disable => "disable",
             Self::Expanded => "expanded",
             Self::Collapsed => "collapsed",
+            Self::Compact => "compact",
         }
     }
 }
